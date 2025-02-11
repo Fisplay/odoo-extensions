@@ -8,6 +8,6 @@
         <field name="binding_model_id" ref="account.model_account_move"/>
         <field name="binding_type">action</field>
         <field name="code">action = records.action_ai_bookkeeping_assist()</field>
-        <field name="domain">[("move_type", "=", "in_invoice")]</field>
+        <!--<field name="domain">[("move_type", "=", "in_invoice")]</field>!-->
     </record>
 </odoo>
