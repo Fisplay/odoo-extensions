@@ -23,6 +23,7 @@ This module helps accountants and finance teams save time and reduce errors by l
     'depends': ['base', 'account', 'account_accountant','openai_service'],
     "data": [
         "views/account_move_action.xml",
+        "views/res_config_settings_view.xml",
     ],
     "installable": True,
     "application": False,

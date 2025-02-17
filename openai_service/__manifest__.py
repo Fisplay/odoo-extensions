@@ -7,7 +7,9 @@
     "license": "LGPL-3",
     "website": "https://fisplay.com",
     "depends": ["base"],
-    "data": [],
+    "data": [
+        'views/res_config_settings_view.xml',
+    ],
     "installable": True,
     "application": False,
     "description": """

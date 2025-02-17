@@ -10,11 +10,15 @@ class AccountMove(models.Model):
 
         openai_service = self.env["openai.service"]  # Access AI service
 
-        # Fetch system parameter to determine if debugging is enabled
-        debug_enabled = self.env["ir.config_parameter"].sudo().get_param("ai_bookkeeping_debug", "false").lower() == "true"
+        # Fetch system parameters
+        debug_enabled = self.env["ir.config_parameter"].sudo().get_param("ai_invoice_handler.debug", "false").lower() == "true"
+        assistant_id = self.env["ir.config_parameter"].sudo().get_param("openai.assistant_id")
+
+        if not assistant_id:
+            self.message_post(body="⚠️ AI Bookkeeping Assist Error: No Assistant ID configured.")
+            return
 
         for invoice in self:
-            # Ensure only draft vendor invoices are processed
             if invoice.move_type != "in_invoice" or invoice.state != "draft":
                 invoice.message_post(body="⚠️ AI Bookkeeping Assist can only be applied to draft vendor invoices.")
                 continue
@@ -25,21 +29,16 @@ class AccountMove(models.Model):
             previous_invoices = self.env["account.move"].search([
                 ("partner_id", "=", vendor_id),
                 ("move_type", "=", "in_invoice"),
-                ("state", "=", "posted")  # Only posted invoices
+                ("state", "=", "posted")
             ], order="invoice_date desc", limit=5)
 
-            # Fetch all bookkeeping accounts for reference
-            accounts = self.env["account.account"].search([])
-            account_mapping = {str(acc.id): acc.name for acc in accounts}  # Create an ID-to-name mapping
-
-            # Extract bookkeeping accounts, analytic distribution, tax information, and line descriptions
+            # Extract history data
             history_data = []
             for inv in previous_invoices:
                 for line in inv.invoice_line_ids:
-                    tax_ids = [tax.id for tax in line.tax_ids]  # Store tax IDs as a list
-                    tax_names = [tax.name for tax in line.tax_ids]  # Store tax names
+                    tax_ids = [tax.id for tax in line.tax_ids]
+                    tax_names = [tax.name for tax in line.tax_ids]
 
-                    # Ensure analytic_distribution is always treated as a dictionary
                     analytic_distribution = line.analytic_distribution or {}
                     if isinstance(analytic_distribution, str):
                         analytic_distribution = {}
@@ -57,11 +56,11 @@ class AccountMove(models.Model):
                         "tax_names": tax_names
                     })
 
-            # Extract current invoice lines with placeholders and IDs
+            # Extract current invoice lines
             current_lines = []
             for line in invoice.invoice_line_ids:
                 current_lines.append({
-                    "line_id": line.id,  # Store invoice line ID for mapping back
+                    "line_id": line.id,
                     "invoice_sum": invoice.amount_total,
                     "invoice_ref": invoice.ref or "No Reference",
                     "product": line.product_id.name or "Unknown",
@@ -75,16 +74,10 @@ class AccountMove(models.Model):
                     "tax_names": "[TO_BE_FILLED]"
                 })
 
-            # Convert account mapping to JSON
-            account_mapping_json = json.dumps(account_mapping, indent=2)
-
             # Create AI prompt
             prompt = f"""
             You are an expert accountant analyzing bookkeeping data. Your task is to determine the most appropriate bookkeeping account, analytic distribution, and tax selection for the current invoice based on past invoices.
-
-            ### Account Mapping (Reference for Account Selection):
-            {account_mapping_json}
-
+            
             ### Previous Invoice Data:
             {json.dumps(history_data, indent=2)}
 
@@ -103,8 +96,12 @@ class AccountMove(models.Model):
             if debug_enabled:
                 invoice.message_post(body=f"📌 AI Debugging Prompt:\n<pre>{prompt}</pre>")
 
-            # Call OpenAI via the AI service
-            ai_response = openai_service.get_openai_response(prompt)
+            # Call OpenAI Assistant API
+            ai_response = openai_service.get_assistant_response(assistant_id, prompt)
+
+            # Debug raw response
+            if debug_enabled:
+                invoice.message_post(body=f"🔍 AI Debugging Response:\n<pre>{ai_response}</pre>")
 
             if "Error" in ai_response:
                 invoice.message_post(body=f"⚠️ AI Bookkeeping Assist Error: {ai_response}")
@@ -123,14 +120,15 @@ class AccountMove(models.Model):
                 if not invoice_line:
                     continue  # Skip if no matching invoice line found
 
-                invoice_line = invoice_line[0]  # Get the first matching line
+                invoice_line = invoice_line[0]
 
                 # Get suggested account
                 suggested_account_id = suggestion.get("account_id")
                 suggested_account_name = suggestion.get("account_name")
 
-                # Ensure account exists in Odoo
-                suggested_account = self.env["account.account"].browse(suggested_account_id) if suggested_account_id else None
+                suggested_account = None
+                if suggested_account_id:
+                    suggested_account = self.env["account.account"].browse(suggested_account_id)
                 if not suggested_account or not suggested_account.exists():
                     suggested_account = self.env["account.account"].search([("name", "=", suggested_account_name)], limit=1)
 
@@ -144,14 +142,14 @@ class AccountMove(models.Model):
                     invoice_line.analytic_distribution = analytic_distribution
 
                 # Assign tax selection
-                tax_id_list = suggestion.get("tax_ids", [])
-                if tax_id_list:
-                    taxes = self.env["account.tax"].browse(tax_id_list)
-                else:
-                    # If tax IDs are not valid, try to fetch by name
-                    tax_names = suggestion.get("tax_names", [])
+                tax_ids = suggestion.get("tax_ids", [])
+                tax_names = suggestion.get("tax_names", [])
+
+                taxes = self.env["account.tax"].browse(tax_ids) if tax_ids else None
+                if not taxes or not taxes.exists():
                     taxes = self.env["account.tax"].search([("name", "in", tax_names)])
 
-                invoice_line.tax_ids = [(6, 0, taxes.ids)] if taxes else []
+                if taxes:
+                    invoice_line.tax_ids = [(6, 0, taxes.ids)]
 
             invoice.message_post(body="✅ AI-based bookkeeping account, analytic distribution, and tax selection applied.")
